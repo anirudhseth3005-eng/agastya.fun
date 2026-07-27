@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>HITMAN HUNTERS 3D — v8.1 REAL TREES</title>
+<title>HITMAN HUNTERS 3D — v9 INSIDE &amp; UP</title>
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#0b0e14;font-family:'Segoe UI',Arial,sans-serif;user-select:none}
   #c{display:block}
@@ -153,7 +153,7 @@
 <!-- ============ HOME SCREEN ============ -->
 <div id="overlay">
   <h1>HITMAN <span class="red">HUNTERS</span></h1>
-  <div class="ver">— v8.1 · REAL TREES · <span id="mapName"></span> —</div>
+  <div class="ver">— v9 · INSIDE &amp; UP · <span id="mapName"></span> —</div>
   <div class="summary" id="runSummary" style="display:none"></div>
   <div class="statrow">
     <div class="stat">💰<b id="hMoney">0</b><span>BANK</span></div>
@@ -195,7 +195,7 @@
     <textarea id="loadCode" placeholder="Paste a save code here..." style="width:100%;height:48px;margin:6px 0;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:8px;color:#fff;font-size:11px;padding:8px;box-sizing:border-box;resize:none"></textarea>
     <button class="buy equip" id="loadBtn" style="width:100%">⬇️ LOAD SAVE</button>
   </div>
-  <p class="ctl"><b>WASD</b> move · <b>SPACE</b> jump / climb tree · <b>1-5</b> weapons · <b>R</b> reload · <b>E</b> scope + shops · <b>F</b> car · <b>Shift</b> sprint · Progress auto-saves when possible — and your 💾 <b>SAVE CODE</b> works anywhere</p>
+  <p class="ctl"><b>WASD</b> move · <b>SPACE</b> jump / climb tree · <b>1-5</b> weapons · <b>R</b> reload · <b>E</b> scope + shops + 🛗 lift · <b>F</b> car / heli / ferry · <b>Shift</b> sprint · <b>NEW in v9:</b> walk INSIDE your hideout, and ride the downtown lift to the rooftop · Progress auto-saves when possible — and your 💾 <b>SAVE CODE</b> works anywhere</p>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -248,6 +248,14 @@ let hideoutObj=null,heliObj=null,heliPadBuilt=false,lampGlows=[],lampHeadM=null,
 const HIDEOUT={x:-45,z:-58,r:14},HELIPAD={x:52,z:-40},DOCKZ=-30;
 let ferryObj=null,oceanBuilt=false;
 const wallRefs=[],peds=[],waveStripes=[],skids=[];
+// ---- v9 INSIDE & UP ----
+// platforms[] = walkable surfaces ABOVE the ground. {x,z,hw,hd,y} where y is the
+// height of the surface itself. supportY() turns this list into "how high is the
+// floor under the player right now", which is the whole floor system in one idea.
+const platforms=[],trophyObjs=[];
+let tallestB=null,liftLobby=null;
+const towerCands=[];
+const LIFT={built:false,x:0,z:0,hw:1.2,hd:1.2,carY:.2,botY:.2,topY:0,target:0,moving:false,car:null,speed:6.5};
 
 // ================================================================
 //  RENDERER / SCENE
@@ -401,6 +409,7 @@ function applyWeaponSkin(id){
   wood.color.setHex(s.wood);
   bladeMat.color.setHex(s.blade);bladeMat.emissive.setHex(s.em);
   state.wSkin=id;profile.wSkin=id;
+  refreshTrophies();
 }
 function applySkinToPerson(mesh){
   const fs=FRIEND_SKINS[state.fSkin]||FRIEND_SKINS.default,m=mesh.userData;
@@ -531,7 +540,11 @@ function makePerson(opt){
 // ================================================================
 //  WORLD BUILD (uses MAP/ROADS chosen at boot)
 // ================================================================
-function addObstacle(x,z,hw,hd,h){const o={x,z,hw,hd,h};obstacles.push(o);return o;}
+// y0 = the BOTTOM of an obstacle. Undefined means "sits on the ground" (everything
+// before v9). Give it a value and the thing only exists between y0 and h — that's how
+// a rooftop railing can block you up on the roof without being an invisible wall in
+// the street 42m below.
+function addObstacle(x,z,hw,hd,h,y0){const o={x,z,hw,hd,h,y0};obstacles.push(o);return o;}
 let seed=42;function rnd(){seed=(seed*16807)%2147483647;return(seed-1)/2147483646;}
 function nearRoad(x,z,pad){return ROADS.some(r=>Math.abs(x-r)<pad)||ROADS.some(r=>Math.abs(z-r)<pad);}
 function inForest(x,z){return FORESTS.some(f=>x>f.x0&&x<f.x1&&z>f.z0&&z<f.z1);}
@@ -610,6 +623,9 @@ function initWorld(){
     const w=downtown?7+rnd()*10:6+rnd()*5,d=downtown?7+rnd()*10:6+rnd()*5;
     if(nearRoad(x,z,Math.max(w,d)/2+9))continue;
     if(Math.hypot(x,z)<22||inForest(x,z))continue;
+    // keep the hideout plot clear — v8.1 dropped the house straight through a
+    // building here, which nobody noticed until you could actually walk inside it
+    if(Math.hypot(x-HIDEOUT.x,z-HIDEOUT.z)<18)continue;
     const glass=downtown&&rnd()<.4;
     const h=downtown?(glass?18+rnd()*26:9+rnd()*15):4.5+rnd()*3;
     const floors=Math.max(2,Math.round(h/3)),cols=Math.max(2,Math.round(w/2.2));
@@ -621,7 +637,9 @@ function initWorld(){
     b.position.set(x,0,z);b.castShadow=true;b.receiveShadow=true;scene.add(b);
     const lip=new THREE.Mesh(rboxGeo(w+.5,.4,d+.5,.4),parapetM);
     lip.position.set(x,h-.15,z);lip.castShadow=true;scene.add(lip);
-    addObstacle(x,z,w/2,d/2,h);placed++;
+    const bObs=addObstacle(x,z,w/2,d/2,h);placed++;
+    // collect downtown towers as lift candidates — we pick one with a clear plot later
+    if(downtown&&h>12)towerCands.push({x,z,hw:w/2,hd:d/2,h,obs:bObs});
     if(rnd()<.45){const ac=new THREE.Mesh(rboxGeo(1.4,.9,1.4,.16),new THREE.MeshLambertMaterial({color:0x9aa4ad}));
       ac.position.set(x+(rnd()-.5)*w*.4,h+.28,z+(rnd()-.5)*d*.4);ac.castShadow=true;scene.add(ac);}
     if(h>8&&rnd()<.3){
@@ -644,9 +662,10 @@ function initWorld(){
   // trees
   function tryTree(x,z){
     if(nearRoad(x,z,8))return;
+    if(Math.hypot(x-HIDEOUT.x,z-HIDEOUT.z)<16)return; // no trees growing in the living room
     if(Math.hypot(x-LAKE.x,z-LAKE.z)<LAKE.r+3)return;
     if(Math.hypot(x,z)<20)return;
-    for(const o of obstacles)if(Math.abs(x-o.x)<o.hw+2&&Math.abs(z-o.z)<o.hd+2)return;
+    for(const o of obstacles)if(o.y0===undefined&&Math.abs(x-o.x)<o.hw+2&&Math.abs(z-o.z)<o.hd+2)return;
     treePos.push([x,z]);treeObs.push(addObstacle(x,z,.55,.55,3));
   }
   FORESTS.forEach((F,fi)=>{const n=profile.bigMap?(fi===0?170:100):130;
@@ -784,6 +803,7 @@ function initWorld(){
   skinRing.rotation.x=Math.PI/2;skinRing.position.set(-26,.5,-26);scene.add(skinRing);
   skinSign=new THREE.Mesh(new THREE.BoxGeometry(3,1.1,.24),new THREE.MeshLambertMaterial({color:0xb14ddb,emissive:0x2e0b47}));
   skinSign.position.set(-26,4.6,-26);scene.add(skinSign);
+  buildLift();
   if(profile.hideout)buildHideout();
   if(profile.heli){buildHelipad();spawnHeli();}
   if(profile.harbor)buildHarbor();
@@ -866,7 +886,7 @@ function updateCar(c,dt){
   c.g.position.z+=-Math.sin(c.angle)*c.speed*dt;
   const p=c.g.position;let bumped=false;
   for(const o of obstacles){
-    if(o===c.obs)continue;
+    if(o===c.obs||o.y0!==undefined)continue;
     const cx=THREE.MathUtils.clamp(p.x,o.x-o.hw,o.x+o.hw)-p.x;
     const cz=THREE.MathUtils.clamp(p.z,o.z-o.hd,o.z+o.hd)-p.z;
     const d2=cx*cx+cz*cz,r=2.1;
@@ -909,26 +929,253 @@ function updateCar(c,dt){
 //  HIDEOUT / NIGHT / HELICOPTER
 // ================================================================
 function playerSafe(){return profile.hideout&&!state.flying&&Math.hypot(player.pos.x-HIDEOUT.x,player.pos.z-HIDEOUT.z)<HIDEOUT.r;}
+// ============================================================
+//  buildRoom() — the reusable INTERIOR shell.
+//  A room is four walls with a GAP in one of them. That gap is the doorway:
+//  no special "door code" needed, the player just walks through the hole.
+//  Every future interior (shops, apartments, vaults) can be built from this.
+// ============================================================
+function buildRoom(o){
+  const g=new THREE.Group();
+  const T=.4,hw=o.w/2,hd=o.d/2,h=o.h;
+  const wallM=new THREE.MeshLambertMaterial({color:o.wall});
+  const walls=[];
+  const seg=(mx,mz,sw,sd)=>{ // sw/sd are HALF extents
+    const m=new THREE.Mesh(new THREE.BoxGeometry(sw*2,h,sd*2),wallM);
+    m.position.set(mx,h/2,mz);m.castShadow=true;m.receiveShadow=true;g.add(m);
+    walls.push(addObstacle(o.x+mx,o.z+mz,sw,sd,h));
+  };
+  const doorW=o.doorW||2.4,segW=(o.w-doorW)/2;
+  const side=o.door||'south';
+  // the three solid walls + the two stubs either side of the doorway
+  if(side==='south'){seg(0,-hd,hw,T/2);seg(-hw,0,T/2,hd);seg(hw,0,T/2,hd);
+    seg(-(doorW/2+segW/2),hd,segW/2,T/2);seg(doorW/2+segW/2,hd,segW/2,T/2);}
+  else if(side==='north'){seg(0,hd,hw,T/2);seg(-hw,0,T/2,hd);seg(hw,0,T/2,hd);
+    seg(-(doorW/2+segW/2),-hd,segW/2,T/2);seg(doorW/2+segW/2,-hd,segW/2,T/2);}
+  else if(side==='east'){seg(0,-hd,hw,T/2);seg(0,hd,hw,T/2);seg(-hw,0,T/2,hd);
+    const segD=(o.d-doorW)/2;
+    seg(hw,-(doorW/2+segD/2),T/2,segD/2);seg(hw,doorW/2+segD/2,T/2,segD/2);}
+  else{seg(0,-hd,hw,T/2);seg(0,hd,hw,T/2);seg(hw,0,T/2,hd);
+    const segD=(o.d-doorW)/2;
+    seg(-hw,-(doorW/2+segD/2),T/2,segD/2);seg(-hw,doorW/2+segD/2,T/2,segD/2);}
+  // floor + ceiling
+  const fl=new THREE.Mesh(new THREE.BoxGeometry(o.w,.12,o.d),new THREE.MeshLambertMaterial({color:o.floor}));
+  fl.position.y=.07;fl.receiveShadow=true;g.add(fl);
+  if(o.ceil!==false){
+    const ce=new THREE.Mesh(new THREE.BoxGeometry(o.w,.2,o.d),new THREE.MeshLambertMaterial({color:o.wall}));
+    ce.position.y=h;g.add(ce);
+  }
+  // one warm point light so the inside isn't a cave
+  const lamp=new THREE.PointLight(o.lightColor||0xffd9a0,o.lightPower||.85,o.w+o.d);
+  lamp.position.set(0,h-.7,0);g.add(lamp);
+  const bulb=new THREE.Mesh(new THREE.SphereGeometry(.16,8,8),
+    new THREE.MeshBasicMaterial({color:o.lightColor||0xffe9c0}));
+  bulb.position.copy(lamp.position);g.add(bulb);
+  g.position.set(o.x,0,o.z);scene.add(g);
+  return {g,walls,lamp};
+}
+// Trophy shelf: one pedestal per weapon skin you own, tinted with that skin's colours.
+function refreshTrophies(){
+  if(!hideoutObj)return;
+  trophyObjs.forEach(t=>hideoutObj.g.remove(t));trophyObjs.length=0;
+  const owned=profile.wOwned.filter(id=>WEAPON_SKINS[id]).slice(0,8);
+  owned.forEach((id,i)=>{
+    const s=WEAPON_SKINS[id].c;
+    const px=-3.1+i*.88,pz=-2.6;
+    const ped=new THREE.Mesh(new THREE.CylinderGeometry(.28,.34,.75,10),
+      new THREE.MeshLambertMaterial({color:0x2b2f3a}));
+    ped.position.set(px,.45,pz);
+    const disp=new THREE.Mesh(new THREE.BoxGeometry(.34,.34,.34),
+      new THREE.MeshLambertMaterial({color:s.mid,emissive:s.em}));
+    disp.position.set(px,1.12,pz);
+    const blade=new THREE.Mesh(new THREE.BoxGeometry(.1,.5,.1),
+      new THREE.MeshLambertMaterial({color:s.blade}));
+    blade.position.set(px,1.5,pz);
+    hideoutObj.g.add(ped,disp,blade);trophyObjs.push(ped,disp,blade);
+  });
+}
 function buildHideout(){
   if(hideoutObj)return;
-  const g=new THREE.Group();
-  const wallM=new THREE.MeshLambertMaterial({color:0x8a6d4f});
-  const base=new THREE.Mesh(rboxGeo(8,4,7,.45),wallM);base.position.y=0;base.castShadow=true;
+  const room=buildRoom({x:HIDEOUT.x,z:HIDEOUT.z,w:8,d:7,h:4,door:'south',doorW:2.4,
+    wall:0x8a6d4f,floor:0x6b4f38,lightColor:0xffd9a0});
+  const g=room.g;
   const roof=new THREE.Mesh(new THREE.ConeGeometry(6.4,3,4),new THREE.MeshLambertMaterial({color:0x7a2e22}));
-  roof.position.y=5.5;roof.rotation.y=Math.PI/4;roof.castShadow=true;
-  const door=new THREE.Mesh(new THREE.BoxGeometry(1.6,2.6,.2),new THREE.MeshLambertMaterial({color:0x3d2b1f}));
-  door.position.set(0,1.3,3.55);
+  roof.position.y=5.5;roof.rotation.y=Math.PI/4;roof.castShadow=true;g.add(roof);
   const winM=new THREE.MeshLambertMaterial({color:0xbfe3ff,emissive:0x6a5420});
-  const w1=new THREE.Mesh(new THREE.BoxGeometry(1.4,1.2,.15),winM);w1.position.set(-2.4,2.4,3.55);
-  const w2=w1.clone();w2.position.x=2.4;
-  g.add(base,roof,door,w1,w2);
-  g.position.set(HIDEOUT.x,0,HIDEOUT.z);scene.add(g);
-  addObstacle(HIDEOUT.x,HIDEOUT.z,4,3.5,4);
+  const w1=new THREE.Mesh(new THREE.BoxGeometry(1.4,1.2,.15),winM);w1.position.set(-2.9,2.4,3.5);
+  const w2=w1.clone();w2.position.x=2.9;
+  const frameM=new THREE.MeshLambertMaterial({color:0x3d2b1f});
+  const fL=new THREE.Mesh(new THREE.BoxGeometry(.22,3,.5),frameM);fL.position.set(-1.31,1.5,3.5);
+  const fR=fL.clone();fR.position.x=1.31;
+  const fT=new THREE.Mesh(new THREE.BoxGeometry(2.9,.3,.5),frameM);fT.position.set(0,3.05,3.5);
+  g.add(w1,w2,fL,fR,fT);
+  // ---- furniture ----
+  const woodM=new THREE.MeshLambertMaterial({color:0x6b4a2f});
+  const bed=new THREE.Mesh(rboxGeo(2.4,.5,1.3,.14),woodM);bed.position.set(2.2,.35,-1.9);
+  const pillow=new THREE.Mesh(rboxGeo(.7,.24,1.1,.1),new THREE.MeshLambertMaterial({color:0xe8e2d4}));
+  pillow.position.set(1.35,.72,-1.9);
+  const quilt=new THREE.Mesh(rboxGeo(1.6,.18,1.24,.1),new THREE.MeshLambertMaterial({color:0x2e6b4f}));
+  quilt.position.set(2.55,.7,-1.9);
+  const table=new THREE.Mesh(rboxGeo(1.5,.14,1.1,.08),woodM);table.position.set(-2.2,.86,1.3);
+  const rug=new THREE.Mesh(new THREE.BoxGeometry(3,.04,2.4),new THREE.MeshLambertMaterial({color:0x8a3f3f}));
+  rug.position.set(0,.14,1.1);
+  const chair=new THREE.Mesh(rboxGeo(.6,.12,.6,.06),woodM);chair.position.set(-.6,.55,1.3);
+  const chairB=new THREE.Mesh(rboxGeo(.6,.8,.12,.06),woodM);chairB.position.set(-.35,.95,1.3);
+  [[-2.85,.43,.8],[-1.55,.43,.8],[-2.85,.43,1.8],[-1.55,.43,1.8]].forEach(([lx,ly,lz])=>{
+    const leg=new THREE.Mesh(new THREE.BoxGeometry(.12,.86,.12),woodM);leg.position.set(lx,ly,lz);g.add(leg);});
+  const shelf=new THREE.Mesh(rboxGeo(6.4,.16,.7,.06),woodM);shelf.position.set(0,1.85,-3.1);
+  g.add(bed,pillow,quilt,table,rug,chair,chairB,shelf);
+  [bed,table,shelf,chair].forEach(m=>m.castShadow=true);
+  addObstacle(HIDEOUT.x+2.2,HIDEOUT.z-1.9,1.2,.75,1);
   const pad=new THREE.Mesh(new THREE.CircleGeometry(HIDEOUT.r,30),new THREE.MeshBasicMaterial({color:0x2ecc71,transparent:true,opacity:.12,depthWrite:false}));
   pad.rotation.x=-Math.PI/2;pad.position.set(HIDEOUT.x,.09,HIDEOUT.z);scene.add(pad);
   const ring=new THREE.Mesh(new THREE.TorusGeometry(HIDEOUT.r,.12,8,48),new THREE.MeshBasicMaterial({color:0x7CFC00}));
   ring.rotation.x=Math.PI/2;ring.position.set(HIDEOUT.x,.4,HIDEOUT.z);scene.add(ring);
-  hideoutObj={g,winM,ring};
+  hideoutObj={g,winM,ring,lamp:room.lamp};
+  refreshTrophies();
+}
+// ============================================================
+//  THE FLOOR SYSTEM
+//  supportY() answers one question: "how high is the floor under the player?"
+//  Ground is 1.7 (eye height). Any platform you're standing on wins instead.
+//  Everything above — roofs, the lift car, future balconies — is just an entry
+//  in platforms[]. The player physics never had to learn about buildings at all.
+// ============================================================
+function supportY(x,z,y){
+  let best=1.7;
+  for(const p of platforms){
+    if(Math.abs(x-p.x)<p.hw&&Math.abs(z-p.z)<p.hd){
+      const top=p.y+1.7;
+      if(top<=y+.75&&top>best)best=top; // only floors at or below you can hold you up
+    }
+  }
+  return best;
+}
+// Pick the TALLEST downtown tower that actually has room for a lobby on its south
+// face. Height alone isn't enough — a tower wedged against a neighbour would put the
+// lobby's front door inside someone else's wall.
+function pickLiftTower(){
+  const cands=towerCands.slice().sort((a,b)=>b.h-a.h);
+  for(const T of cands){
+    const z0=T.z+T.hd,z1=z0+6.6;
+    if(nearRoad(T.x,z0+3.3,9))continue;
+    let clear=true;
+    for(const o of obstacles){
+      if(o===T.obs||o.y0!==undefined)continue;
+      if(Math.abs(o.x-T.x)<o.hw+3.8&&o.z+o.hd>z0&&o.z-o.hd<z1){clear=false;break;}
+    }
+    if(clear)return T;
+  }
+  return cands[0]||null;
+}
+function buildLift(){
+  if(LIFT.built)return;
+  tallestB=pickLiftTower();
+  if(!tallestB)return;
+  LIFT.built=true;
+  const T=tallestB,topY=T.h;
+  const lobbyZ=T.z+T.hd+3.2;
+  LIFT.x=T.x;LIFT.z=T.z+T.hd+2.0;LIFT.topY=topY;LIFT.carY=LIFT.botY;
+  // ---- ground-floor LOBBY (same buildRoom helper as the hideout) ----
+  const room=buildRoom({x:T.x,z:lobbyZ,w:7,d:6,h:4.5,door:'south',doorW:2.6,
+    wall:0x4a5560,floor:0x9aa4ad,ceil:false,lightColor:0xcfe6ff,lightPower:1});
+  liftLobby=room.g;
+  // ceiling with a HOLE so the lift can rise through it
+  const ceilM=new THREE.MeshLambertMaterial({color:0x4a5560});
+  [[-2.45,0,2.1,6],[2.45,0,2.1,6],[0,1.55,2.8,2.9]].forEach(([cx,cz,cw,cd])=>{
+    const c=new THREE.Mesh(new THREE.BoxGeometry(cw,.2,cd),ceilM);c.position.set(cx,4.5,cz);liftLobby.add(c);});
+  const signM=new THREE.MeshLambertMaterial({color:0x1b2733,emissive:0x0d3a5c});
+  const sign=new THREE.Mesh(new THREE.BoxGeometry(2.6,.7,.16),signM);sign.position.set(0,3.5,3.05);liftLobby.add(sign);
+  // ---- SHAFT: corner rails running the full height ----
+  const railM=new THREE.MeshLambertMaterial({color:0x39414d});
+  [[-1.5,-1.5],[1.5,-1.5],[-1.5,1.5],[1.5,1.5]].forEach(([ox,oz])=>{
+    const r=new THREE.Mesh(new THREE.CylinderGeometry(.13,.13,topY+2.2,6),railM);
+    r.position.set(LIFT.x+ox,(topY+2.2)/2,LIFT.z+oz);r.castShadow=true;scene.add(r);});
+  const glassM=new THREE.MeshLambertMaterial({color:0x9cc4de,transparent:true,opacity:.24,depthWrite:false});
+  [[0,-1.5,3,.08],[-1.5,0,.08,3]].forEach(([ox,oz,gw,gd])=>{
+    const gl=new THREE.Mesh(new THREE.BoxGeometry(gw,topY+2,gd),glassM);
+    gl.position.set(LIFT.x+ox,(topY+2)/2,LIFT.z+oz);scene.add(gl);});
+  // ---- the CAR ----
+  const car=new THREE.Group();
+  const plate=new THREE.Mesh(rboxGeo(2.4,.18,2.4,.12),new THREE.MeshLambertMaterial({color:0x5b6672}));
+  plate.position.y=-.09;plate.castShadow=true;
+  const roofP=plate.clone();roofP.position.y=2.5;
+  const capM=new THREE.MeshLambertMaterial({color:0x2f3640});
+  [[-1.1,-1.1],[1.1,-1.1],[-1.1,1.1],[1.1,1.1]].forEach(([ox,oz])=>{
+    const post=new THREE.Mesh(new THREE.BoxGeometry(.12,2.6,.12),capM);post.position.set(ox,1.25,oz);car.add(post);});
+  const panel=new THREE.Mesh(new THREE.BoxGeometry(.5,.7,.1),new THREE.MeshLambertMaterial({color:0x1b2733,emissive:0x2a6a1c}));
+  panel.position.set(.85,1.3,-1.05);
+  const lampC=new THREE.PointLight(0xbfe3ff,.7,7);lampC.position.set(0,2.3,0);
+  car.add(plate,roofP,panel,lampC);
+  car.position.set(LIFT.x,LIFT.carY,LIFT.z);scene.add(car);
+  LIFT.car=car;
+  LIFT.plat={x:LIFT.x,z:LIFT.z,hw:1.15,hd:1.15,y:LIFT.carY};
+  platforms.push(LIFT.plat);
+  // ---- rooftop: the walkway bridging car → roof, then the roof itself ----
+  // The walkway must NOT overlap the car's footprint — if it did, the roof would keep
+  // holding you up and the lift would descend without you. It bridges roof edge → car
+  // edge and stops exactly there.
+  const walk=new THREE.Mesh(new THREE.BoxGeometry(2.4,.18,1.4),new THREE.MeshLambertMaterial({color:0x6b7681}));
+  walk.position.set(T.x,topY-.09,T.z+T.hd+.2);walk.castShadow=true;scene.add(walk);
+  platforms.push({x:T.x,z:T.z+T.hd+.2,hw:1.2,hd:.72,y:topY});
+  // SAFETY GATE: an open lift shaft 42m up is a death trap, so a barrier closes it
+  // whenever the car isn't docked here. It's elevated (y0), so it's not a wall in the street.
+  const gateM=new THREE.MeshLambertMaterial({color:0xd7a13b,emissive:0x3a2a05});
+  const gate=new THREE.Mesh(new THREE.BoxGeometry(2.4,1.5,.16),gateM);
+  gate.position.set(T.x,topY+.75,T.z+T.hd+.86);scene.add(gate);
+  LIFT.gateMesh=gate;
+  LIFT.gate=addObstacle(T.x,T.z+T.hd+.86,1.2,.16,topY+1.5,topY);
+  LIFT.gateZ=T.z+T.hd+.86;
+  platforms.push({x:T.x,z:T.z,hw:T.hw,hd:T.hd,y:topY});
+  // safety railing so a sniper doesn't walk off — sits ABOVE roof level, so it only
+  // blocks you when your feet are up there (see the feetY rule in collide()).
+  const rlM=new THREE.MeshLambertMaterial({color:0x8d99ae});
+  const rail=(rx,rz,rhw,rhd)=>{
+    const m=new THREE.Mesh(new THREE.BoxGeometry(rhw*2,1.1,rhd*2),rlM);
+    m.position.set(rx,topY+.55,rz);scene.add(m);
+    addObstacle(rx,rz,rhw,rhd,topY+1.2,topY);
+  };
+  rail(T.x,T.z-T.hd,T.hw,.18);
+  rail(T.x-T.hw,T.z,.18,T.hd);
+  rail(T.x+T.hw,T.z,.18,T.hd);
+  const gapH=(T.hw-1.4)/2; // south side: leave the walkway doorway open
+  if(gapH>.3){rail(T.x-(1.4+gapH),T.z+T.hd,gapH,.18);rail(T.x+(1.4+gapH),T.z+T.hd,gapH,.18);}
+  feed('🛗 A service lift was found downtown');
+}
+function playerAtLiftDoor(){ // standing on the rooftop walkway by the shaft
+  return LIFT.built&&player.pos.y>LIFT.topY-.5
+    &&Math.abs(player.pos.x-LIFT.x)<2.2&&Math.abs(player.pos.z-(LIFT.z-1.8))<2.4;
+}
+function callLift(){
+  if(!LIFT.built||LIFT.moving)return;
+  if(playerOnLift())LIFT.target=(LIFT.carY<LIFT.topY*.5)?LIFT.topY:LIFT.botY;
+  else{if(LIFT.carY>=LIFT.topY-.01)return;LIFT.target=LIFT.topY;} // call it up to the roof
+  LIFT.moving=true;sfx.climb();
+  feed(LIFT.target>LIFT.carY?'🛗 Going up…':'🛗 Going down…');
+}
+function playerOnLift(){
+  return LIFT.built&&!state.driving&&!state.flying&&!state.riding&&player.climb<0
+    &&Math.abs(player.pos.x-LIFT.x)<1.15&&Math.abs(player.pos.z-LIFT.z)<1.15
+    &&Math.abs(player.pos.y-(LIFT.carY+1.7))<1.8;
+}
+function updateLift(dt){
+  if(!LIFT.built)return;
+  if(LIFT.moving){
+    const dir=Math.sign(LIFT.target-LIFT.carY);
+    LIFT.carY+=dir*LIFT.speed*dt;
+    if((dir>0&&LIFT.carY>=LIFT.target)||(dir<0&&LIFT.carY<=LIFT.target)){
+      LIFT.carY=LIFT.target;LIFT.moving=false;sfx.door();
+      if(state.started&&playerOnLift())showMsg(LIFT.carY>2?'🛗 ROOFTOP — perfect sniper nest':'🛗 Ground floor');
+    }
+  }
+  LIFT.car.position.y=LIFT.carY;
+  LIFT.plat.y=LIFT.carY;
+  // door opens only when the car is actually parked at the roof
+  const open=!LIFT.moving&&LIFT.carY>=LIFT.topY-.01;
+  if(LIFT.gate){
+    LIFT.gateMesh.visible=!open;
+    LIFT.gate.z=open?1e6:LIFT.gateZ; // parked far away = no collision at all
+  }
 }
 function applyNight(on){
   skyMat.map=on?nightSkyTex:daySkyTex;skyMat.needsUpdate=true;
@@ -939,7 +1186,8 @@ function applyNight(on){
   sunGlow.visible=!on;if(moonGlow)moonGlow.visible=on;
   if(lampHeadM)lampHeadM.emissive.set(on?0xffe9a3:0x8a7a30);
   lampGlows.forEach(m=>m.visible=on);
-  if(hideoutObj)hideoutObj.winM.emissive.set(on?0xffd980:0x6a5420);
+  if(hideoutObj){hideoutObj.winM.emissive.set(on?0xffd980:0x6a5420);
+    if(hideoutObj.lamp)hideoutObj.lamp.intensity=on?1.25:.85;}
 }
 function buildHelipad(){
   if(heliPadBuilt)return;heliPadBuilt=true;
@@ -1012,7 +1260,7 @@ function updateHeli(dt,t){
   g.position.z=THREE.MathUtils.clamp(g.position.z,-MAP+4,MAP-4);
   g.position.y=h.alt;
   for(const o of obstacles){
-    if(h.alt>o.h+.6)continue;
+    if(o.y0!==undefined||h.alt>o.h+.6)continue;
     const dx=THREE.MathUtils.clamp(g.position.x,o.x-o.hw,o.x+o.hw)-g.position.x;
     const dz=THREE.MathUtils.clamp(g.position.z,o.z-o.hd,o.z+o.hd)-g.position.z;
     const d2=dx*dx+dz*dz,r=2.6;
@@ -1203,7 +1451,7 @@ function openSpot(){
     const x=(Math.random()*2-1)*(MAP-10),z=(Math.random()*2-1)*(MAP-10);
     if(Math.hypot(x-20,z-20)<11)continue;
     let bad=false;
-    for(const o of obstacles)if(Math.abs(x-o.x)<o.hw+1&&Math.abs(z-o.z)<o.hd+1){bad=true;break;}
+    for(const o of obstacles)if(o.y0===undefined&&Math.abs(x-o.x)<o.hw+1&&Math.abs(z-o.z)<o.hd+1){bad=true;break;}
     if(!bad)return[x,z];
   }
   return null;
@@ -1227,7 +1475,7 @@ function spawnForestLoot(){
   for(let i=0;i<30;i++){
     const x=F.x0+Math.random()*(F.x1-F.x0),z=F.z0+Math.random()*(F.z1-F.z0);
     if(Math.hypot(x-LAKE.x,z-LAKE.z)<LAKE.r+3)continue;
-    let bad=false;for(const o of obstacles)if(Math.abs(x-o.x)<o.hw+1&&Math.abs(z-o.z)<o.hd+1){bad=true;break;}
+    let bad=false;for(const o of obstacles)if(o.y0===undefined&&Math.abs(x-o.x)<o.hw+1&&Math.abs(z-o.z)<o.hd+1){bad=true;break;}
     if(bad)continue;
     const m=new THREE.Mesh(new THREE.OctahedronGeometry(.6),new THREE.MeshLambertMaterial({color:0xc77dff,emissive:0x5a1580}));
     m.position.set(x,.95,z);m.castShadow=true;scene.add(m);
@@ -1313,7 +1561,7 @@ function drawMinimap(){
   ROADS.forEach(r=>{mm.fillRect((r-6+MAP)*sc,0,12*sc,S);mm.fillRect(0,(r-6+MAP)*sc,S,12*sc);});
   mm.fillStyle='rgba(58,123,213,.95)';mm.beginPath();mm.arc((LAKE.x+MAP)*sc,(LAKE.z+MAP)*sc,LAKE.r*sc,0,7);mm.fill();
   mm.fillStyle='rgba(255,255,255,.16)';
-  for(const o of obstacles)if(o.hw>1.5)mm.fillRect((o.x-o.hw+MAP)*sc,(o.z-o.hd+MAP)*sc,o.hw*2*sc,o.hd*2*sc);
+  for(const o of obstacles)if(o.hw>1.5&&o.y0===undefined)mm.fillRect((o.x-o.hw+MAP)*sc,(o.z-o.hd+MAP)*sc,o.hw*2*sc,o.hd*2*sc);
   mm.fillStyle='#FFD700';
   for(const p of pickups)if(p.type==='crate')mm.fillRect((p.mesh.position.x+MAP)*sc-1.2,(p.mesh.position.z+MAP)*sc-1.2,2.4,2.4);
   mm.fillStyle='#66e28a';
@@ -1321,6 +1569,7 @@ function drawMinimap(){
   mm.font='10px sans-serif';mm.fillText('⭐',(20+MAP)*sc-4,(20+MAP)*sc+3);
   mm.fillText('🎨',(-26+MAP)*sc-4,(-26+MAP)*sc+3);
   if(profile.hideout)mm.fillText('🏠',(HIDEOUT.x+MAP)*sc-4,(HIDEOUT.z+MAP)*sc+3);
+  if(LIFT.built)mm.fillText('🛗',(LIFT.x+MAP)*sc-4,(LIFT.z+MAP)*sc+3);
   if(profile.heli&&heliObj&&!heliObj.dead)mm.fillText('🚁',(heliObj.g.position.x+MAP)*sc-4,(heliObj.g.position.z+MAP)*sc+3);
   if(profile.harbor)mm.fillText('⚓',S-12,(DOCKZ+MAP)*sc+3);
   mm.fillStyle='#c77dff';
@@ -1449,6 +1698,7 @@ addEventListener('keydown',e=>{
     else if(state.skinOpen)closeSkinShop();
     else if(!state.driving&&player.pos.distanceTo(shopPad.position)<4.8)openShop();
     else if(!state.driving&&player.pos.distanceTo(skinPad.position)<4.8)openSkinShop();
+    else if(playerOnLift()||playerAtLiftDoor())callLift();
     else if(!state.driving&&curW==='sniper')toggleZoom();
   }
   if(menuOpen())return;
@@ -1596,9 +1846,16 @@ function damageEnemy(e,amt){
 // ================================================================
 //  COLLISION / AI
 // ================================================================
-function collide(pos,r,ignore){
+function collide(pos,r,ignore,feetY){
   for(const o of obstacles){
     if(o===ignore)continue;
+    // if your feet are level with (or above) the top of this thing, you're standing
+    // ON it, not walking INTO it. Only the player passes feetY — everyone else is
+    // ground-bound and behaves exactly as before.
+    if(o.y0!==undefined){
+      // elevated thing: only the player can meet it, and only at the right height
+      if(feetY===undefined||feetY<=o.y0-1.5||feetY>=o.h)continue;
+    }else if(feetY!==undefined&&o.h<=feetY+.1)continue;
     const dx=THREE.MathUtils.clamp(pos.x,o.x-o.hw,o.x+o.hw)-pos.x;
     const dz=THREE.MathUtils.clamp(pos.z,o.z-o.hd,o.z+o.hd)-pos.z;
     const d2=dx*dx+dz*dz;
@@ -1610,7 +1867,7 @@ function collide(pos,r,ignore){
 function lineOfSight(a,b,ignore){
   const dir=b.clone().sub(a);const len=dir.length();dir.normalize();
   for(const o of obstacles){
-    if(o.h<1.6||o===ignore)continue;
+    if(o.y0!==undefined||o.h<1.6||o===ignore)continue;
     for(let t=1;t<len;t+=1.6){
       const px=a.x+dir.x*t,pz=a.z+dir.z*t;
       if(Math.abs(px-o.x)<o.hw&&Math.abs(pz-o.z)<o.hd)return false;
@@ -1621,7 +1878,7 @@ function lineOfSight(a,b,ignore){
 function nearestCover(from){
   let best=null,bd=1e9;
   for(const o of obstacles){
-    if(o.hw<1||o.h<1.8)continue;
+    if(o.y0!==undefined||o.hw<1||o.h<1.8)continue;
     const d=Math.hypot(o.x-from.x,o.z-from.z);
     if(d<bd&&d<40){bd=d;best=o;}
   }
@@ -1633,7 +1890,8 @@ function enemyShoot(e,dist,dt){
   if(playerSafe())return;
   e.shootT-=dt;
   const climbing=player.climb>=0;
-  const maxRange=climbing?16:(e.elite?36:27);
+  const high=!climbing&&player.pos.y>8; // rooftop or riding the lift — hard to hit
+  const maxRange=climbing?16:(high?18:(e.elite?36:27));
   if(e.shootT<=0&&dist<maxRange){
     const ignore=climbing?treeObs[player.climb]:null;
     if(!lineOfSight(e.mesh.position.clone().setY(1.6),player.pos.clone().setY(1.6),ignore))return;
@@ -1642,6 +1900,7 @@ function enemyShoot(e,dist,dt){
     tracer(e.mesh.position.clone().setY(1.6),player.pos.clone().add(new THREE.Vector3((Math.random()-.5)*.7,(Math.random()-.5)*.7,(Math.random()-.5)*.7)),e.elite?0xffa020:0xff5555);
     let hitChance=.62;
     if(climbing)hitChance=.35;
+    if(high)hitChance=.3;
     if(state.driving)hitChance=.5;
     if(state.flying)hitChance=state.flying.alt>10?.18:.4;
     if(state.riding)hitChance=.45;
@@ -1782,6 +2041,8 @@ function tick(){
     sk.m.material.opacity=Math.max(0,sk.t/6)*sk.o;
     if(sk.t<=0){scene.remove(sk.m);skids.splice(i,1);}}
   if(ferryObj)updateFerry(dt,t);
+  updateLift(dt);
+  trophyObjs.forEach((o,i)=>{if(o.geometry&&o.geometry.type==='BoxGeometry')o.rotation.y+=dt*(1.1+i*.05);});
   waveStripes.forEach(ws=>{ws.m.position.x-=dt*ws.s;if(ws.m.position.x<MAP+14)ws.m.position.x=MAP+430;});
   if(peds.length)updatePeds(dt,t);
   if(!state.driving&&state.started){
@@ -1832,14 +2093,17 @@ function update(dt,t){
     const sprint=(keys.ShiftLeft||keys.ShiftRight)?1.55:1;
     const moving=move.lengthSq()>0;
     if(moving){move.normalize().multiplyScalar(state.speed*sprint*(state.zoom?.45:1)*dt);player.pos.add(move);}
-    collide(player.pos,player.r);
+    collide(player.pos,player.r,null,player.pos.y-1.7);
+    const gy=supportY(player.pos.x,player.pos.z,player.pos.y);
     if(!player.grounded){player.vy-=14*dt;player.pos.y+=player.vy*dt;
-      if(player.pos.y<=1.7){
+      if(player.pos.y<=gy){
         if(player.vy<-13){const fd=Math.round((-player.vy-13)*5);
           state.hp-=fd;sfx.thud();feed('🦴 Fall damage -'+fd);
           ui.dmgflash.style.opacity=1;setTimeout(()=>ui.dmgflash.style.opacity=0,180);
           if(state.hp<=0){gameOver();return;}}
-        player.pos.y=1.7;player.vy=0;player.grounded=true;}}
+        player.pos.y=gy;player.vy=0;player.grounded=true;}}
+    else if(player.pos.y>gy+.5){player.grounded=false;player.vy=0;} // walked off an edge
+    else player.pos.y=gy;                                           // ride the lift up/down
     const bob=(moving&&player.grounded)?Math.sin(t*(sprint>1?13:10))*.055:0;
     camera.position.set(player.pos.x,player.pos.y+bob,player.pos.z);
     camera.rotation.set(0,0,0);camera.rotateY(player.yaw);camera.rotateX(player.pitch);
@@ -1851,6 +2115,9 @@ function update(dt,t){
   else if(state.riding)hint=state.riding.docked?'🛳️ Docked — press F to step off':'🌊 Cruising the ocean — enjoy the view';
   else if(state.driving)hint='W/S gas · A/D steer · F to exit';
   else if(player.climb>=0)hint='🌲 Sniper nest! SPACE to jump down';
+  else if(playerOnLift())hint=LIFT.moving?'🛗 Riding the lift…':(LIFT.carY>2?'Press E to go back DOWN':'Press E to ride UP to the rooftop');
+  else if(playerAtLiftDoor())hint=LIFT.moving?'🛗 Lift on its way…':(LIFT.carY>=LIFT.topY-.01?'🛗 Step in — E to go down':'Press E to call the lift');
+  else if(player.pos.y>6)hint='🏙️ Rooftop — snipe from the parapet';
   else if(player.pos.distanceTo(shopPad.position)<4.8)hint='Press E to open the BLACK MARKET';
   else if(player.pos.distanceTo(skinPad.position)<4.8)hint='Press E to open the STYLE SHOP';
   else{
@@ -1932,6 +2199,7 @@ function resetRun(){
   if(heliObj){scene.remove(heliObj.g);heliObj=null;}
   if(profile.heli)spawnHeli();
   state.flying=null;state.riding=null;
+  if(LIFT.built){LIFT.carY=LIFT.botY;LIFT.moving=false;LIFT.car.position.y=LIFT.carY;LIFT.plat.y=LIFT.carY;}
   for(let i=0;i<(profile.bigMap?26:18);i++)spawnCrate();
   for(let i=0;i<(profile.bigMap?8:6);i++)spawnMedkit();
   state.kills=0;state.dead=false;state.started=false;state.driving=null;state.shopOpen=false;state.skinOpen=false;
@@ -2023,7 +2291,10 @@ function refreshHome(){
     if(state.money<1500||profile.bestBounty<2)return;
     spend(1500);profile.bigMap=true;sfx.buy();
     saveNow().finally(()=>{
-      try{location.reload();}catch(e){}
+      // NEVER reload unless we KNOW the save landed. saveNow() fails silently when
+      // window.storage doesn't exist, and a reload would then wipe everything.
+      if(autoSaveOK){try{location.reload();}catch(e){}}
+      else showMsg('🌆 MEGA CITY unlocked — copy your SAVE CODE, then reopen the game!');
       setTimeout(()=>{document.getElementById('mapName').textContent='MEGA CITY (reopen game to load it)';refreshHome();},900);
     });
   };
@@ -2099,7 +2370,9 @@ document.getElementById('loadBtn').onclick=()=>{
   saveNow();
   if(wantBig!==worldIsBig){
     b.textContent='✅ LOADED — reopen the game for the map!';
-    try{location.reload();}catch(e){}
+    // same rule as MEGA CITY: the loaded profile only lives in memory until a real
+    // save succeeds. Reloading without that would throw the code away.
+    if(autoSaveOK){try{location.reload();}catch(e){}}
   }else{
     applyWeaponSkin(profile.wSkin);
     state.fSkin=FRIEND_SKINS[profile.fSkin]?profile.fSkin:'default';
