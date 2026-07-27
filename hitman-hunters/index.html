@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>HITMAN HUNTERS 3D — v9.2 FOREST FLOOR</title>
+<title>HITMAN HUNTERS 3D — v9.3 REAL FOLIAGE</title>
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#0b0e14;font-family:'Segoe UI',Arial,sans-serif;user-select:none}
   #c{display:block}
@@ -153,7 +153,7 @@
 <!-- ============ HOME SCREEN ============ -->
 <div id="overlay">
   <h1>HITMAN <span class="red">HUNTERS</span></h1>
-  <div class="ver">— v9.2 · FOREST FLOOR · <span id="mapName"></span> —</div>
+  <div class="ver">— v9.3 · REAL FOLIAGE · <span id="mapName"></span> —</div>
   <div class="summary" id="runSummary" style="display:none"></div>
   <div class="statrow">
     <div class="stat">💰<b id="hMoney">0</b><span>BANK</span></div>
@@ -573,29 +573,29 @@ function rboxGeo(w,h,d,r){
 //  turns a smooth sphere into a leafy mass you can see sky through, and unlike real
 //  transparency it needs no sorting, so it costs essentially nothing.
 // ============================================================
-function foliageTex(kind){
-  return canvasTex(256,256,(g,w,h)=>{
-    // Start SOLID and PUNCH HOLES, rather than scattering leaves onto nothing.
-    // Why: mipmaps average the alpha channel as a texture shrinks with distance. A
-    // sparse texture averages below the cutoff and the entire canopy vanishes. Keeping
-    // coverage high (~78%) means distant trees stay leafy while close ones show sky.
+// Foliage shading — FULLY OPAQUE, no holes anywhere. This is the replacement for
+// v9.1/v9.2's alpha-hole texture, which read as mould spots. All this does is mottle
+// the surface light/dark so a canopy looks like clustered leaves instead of a smooth
+// plastic bubble, and knocks the overall brightness down so the sun stops blowing it
+// out to pale mint. Greyscale on purpose: the per-instance colour supplies the hue.
+function foliageShadeTex(soft){
+  return canvasTex(128,128,(g,w,h)=>{
     g.fillStyle='#ffffff';g.fillRect(0,0,w,h);
-    for(let i=0;i<190;i++){ // darker clumps = depth inside the leaf mass, not a flat wash
-      g.fillStyle='rgba(96,132,88,'+(.10+Math.random()*.26)+')';
-      g.beginPath();g.arc(Math.random()*w,Math.random()*h,6+Math.random()*17,0,7);g.fill();}
-    for(let i=0;i<90;i++){ // a few brighter sun-caught clusters
-      g.fillStyle='rgba(255,255,235,'+(.06+Math.random()*.16)+')';
-      g.beginPath();g.arc(Math.random()*w,Math.random()*h,4+Math.random()*10,0,7);g.fill();}
-    g.globalCompositeOperation='destination-out';g.fillStyle='#000';
-    const holes=kind==='needle'?190:105;
-    for(let i=0;i<holes;i++){
-      const cx=Math.random()*w,cy=Math.random()*h,rot=Math.random()*3.14;
-      const r=kind==='needle'?1.4+Math.random()*2.6:2.4+Math.random()*4.6;
-      // punch every hole in all 9 wrapped positions so the texture tiles seamlessly
+    const blob=(cx,cy,r,style)=>{g.fillStyle=style;
       for(const dx of[-w,0,w])for(const dy of[-h,0,h]){
-        g.beginPath();g.ellipse(cx+dx,cy+dy,r,r*(kind==='needle'?2.3:1.3),rot,0,7);g.fill();}
+        g.beginPath();g.arc(cx+dx,cy+dy,r,0,7);g.fill();}};
+    // LOW-FREQUENCY shading only. Lots of small circles — light or dark — read as dots
+    // no matter how you tune them. Broad soft patches read as light falling unevenly
+    // through a canopy, which is what we actually want. No bright highlight pass at all.
+    for(let i=0;i<70;i++){
+      const v=Math.round(74+Math.random()*76);
+      blob(Math.random()*w,Math.random()*h,(soft?14:11)+Math.random()*(soft?26:20),
+        'rgba('+v+','+v+','+v+',.34)');
     }
-    g.globalCompositeOperation='source-over';
+    for(let i=0;i<40;i++){                        // a second, finer pass to break up banding
+      const v=Math.round(96+Math.random()*64);
+      blob(Math.random()*w,Math.random()*h,6+Math.random()*13,'rgba('+v+','+v+','+v+',.22)');
+    }
   });
 }
 function barkTex(birch){
@@ -655,7 +655,11 @@ function crossQuadGeo(w,h,blades){
     pos.push(-cs,0,-sn, cs,0,sn, cs,h,sn, -cs,h,-sn);
     uv.push(0,0, 1,0, 1,1, 0,1);
     nor.push(0,1,0, 0,1,0, 0,1,0, 0,1,0);
+    // Build BOTH windings explicitly instead of using DoubleSide. DoubleSide flips the
+    // normal on back faces, and since these normals are pinned straight up, the flipped
+    // ones pointed straight DOWN and rendered nearly black. Same up-normal both ways.
     idx.push(o,o+1,o+2, o,o+2,o+3);
+    idx.push(o,o+2,o+1, o,o+3,o+2);
   }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
@@ -666,10 +670,12 @@ function crossQuadGeo(w,h,blades){
 function bladeTex(){
   return canvasTex(128,128,(g,w,h)=>{
     g.clearRect(0,0,w,h);
-    for(let i=0;i<48;i++){
-      const x=Math.random()*w,bw=1.6+Math.random()*3.4,bh=h*(.45+Math.random()*.52);
-      const lean=(Math.random()-.5)*24,t=118+Math.random()*95;
-      g.fillStyle='rgb('+Math.round(t*.58)+','+Math.round(t)+','+Math.round(t*.42)+')';
+    for(let i=0;i<62;i++){
+      const x=Math.random()*w,bw=.9+Math.random()*2.0,bh=h*(.40+Math.random()*.46);
+      // blades are drawn LIGHT — the per-instance tint supplies the colour. Drawing
+      // them dark and then tinting them dark multiplies to near-black.
+      const lean=(Math.random()-.5)*20,t=198+Math.random()*57;
+      g.fillStyle='rgb('+Math.round(t*.86)+','+Math.round(t)+','+Math.round(t*.72)+')';
       g.beginPath();g.moveTo(x-bw/2,h);g.lineTo(x+bw/2,h);
       g.quadraticCurveTo(x+bw/2+lean*.5,h-bh*.5,x+lean,h-bh);
       g.quadraticCurveTo(x-bw/2+lean*.5,h-bh*.5,x-bw/2,h);
@@ -679,13 +685,17 @@ function bladeTex(){
 }
 function litterTex(){
   return canvasTex(128,128,(g,w,h)=>{
+    // A soft, radially-faded patch of mottled colour. The old version scattered
+    // discrete brown ellipses and they read as mud splats on the grass.
     g.clearRect(0,0,w,h);
-    const cols=['#5f5230','#6b5c34','#49572c','#75603a','#514226'];
-    for(let i=0;i<95;i++){
-      const x=Math.random()*w,y=Math.random()*h,r=1.5+Math.random()*2.9;
-      g.fillStyle=cols[Math.floor(Math.random()*cols.length)];
-      g.save();g.translate(x,y);g.rotate(Math.random()*6.28);
-      g.beginPath();g.ellipse(0,0,r,r*.55,0,0,7);g.fill();g.restore();
+    const cx=w/2,cy=h/2;
+    for(let i=0;i<90;i++){
+      const a=Math.random()*6.28,r=Math.random()*Math.random()*(w*.46);
+      const x=cx+Math.cos(a)*r,y=cy+Math.sin(a)*r,rr=5+Math.random()*13;
+      const fade=Math.max(0,1-(r/(w*.48)));
+      g.fillStyle='rgba('+Math.round(120+Math.random()*46)+','+Math.round(108+Math.random()*40)+','+
+        Math.round(66+Math.random()*30)+','+(.10+fade*.30)+')';
+      g.beginPath();g.arc(x,y,rr,0,7);g.fill();
     }
   });
 }
@@ -811,14 +821,18 @@ function initWorld(){
     const nLeaf=n-nPine,nBark=n-nBirch;
     const nBranch=types.reduce((a,tt)=>a+(tt===0?2:tt===1?1:0),0);
     // ---- textures ----
-    const leafTex=foliageTex('leaf'),needleTex=foliageTex('needle');
-    leafTexShared=leafTex;
-    leafTex.wrapS=leafTex.wrapT=THREE.RepeatWrapping;leafTex.repeat.set(2,1.4);
-    needleTex.wrapS=needleTex.wrapT=THREE.RepeatWrapping;needleTex.repeat.set(2.4,1.8);
     const barkR=barkTex(false),barkB=barkTex(true);
     [barkR,barkB].forEach(t=>{t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(3,2.2);});
-    const leafMat=st=>{const m=new THREE.MeshLambertMaterial({color:0xffffff,map:leafTex,alphaTest:.3,side:THREE.DoubleSide});windify(m,st,'leaf');return m;};
-    const needleMat=st=>{const m=new THREE.MeshLambertMaterial({color:0xffffff,map:needleTex,alphaTest:.3,side:THREE.DoubleSide});windify(m,st,'needle');return m;};
+    // SOLID foliage. v9.1 punched alpha holes through the canopy and they read as
+    // mould spots, because holes in the MIDDLE of a surface look like damage — real
+    // foliage breaks up at its EDGES. The bumpy silhouette from the 9 tiered clumps
+    // does that job on its own. Do not put a hole texture back on these.
+    const shadeTex=foliageShadeTex(true),needleShade=foliageShadeTex(false);
+    shadeTex.wrapS=shadeTex.wrapT=THREE.RepeatWrapping;shadeTex.repeat.set(2.2,1.6);
+    needleShade.wrapS=needleShade.wrapT=THREE.RepeatWrapping;needleShade.repeat.set(2.6,1.9);
+    leafTexShared=shadeTex;
+    const leafMat=st=>{const m=new THREE.MeshLambertMaterial({color:0xffffff,map:shadeTex});windify(m,st,'leaf');return m;};
+    const needleMat=st=>{const m=new THREE.MeshLambertMaterial({color:0xffffff,map:needleShade});windify(m,st,'needle');return m;};
     const blobM1=leafMat(.10),blobM2=leafMat(.14),blobM3=leafMat(.12);
     const pineM1=needleMat(.05),pineM2=needleMat(.06),pineM3=needleMat(.08);
     const trunkM=new THREE.MeshLambertMaterial({color:0xffffff,map:barkR});
@@ -876,9 +890,9 @@ function initWorld(){
         put(pineA,pi,x,z,Q,0,3.7+2.1*s,0,s,s,s);
         put(pineB,pi,x,z,Q,jit(19,.5),5.5+2.1*s,jit(23,.5),s,s,s);
         put(pineC,pi,x,z,Q,jit(31,.4),7.0+2.1*s,jit(41,.4),s,s,s);
-        pineA.setColorAt(pi,C.setHex(PINEC[0]).offsetHSL(0,0,-.05+jit(43,.08)));
-        pineB.setColorAt(pi,C.setHex(PINEC[1]).offsetHSL(0,0,jit(47,.08)));
-        pineC.setColorAt(pi,C.setHex(PINEC[2]).offsetHSL(0,0,.05+jit(59,.08)));
+        pineA.setColorAt(pi,C.setHex(PINEC[0]).offsetHSL(0,.12,-.09+jit(43,.08)));
+        pineB.setColorAt(pi,C.setHex(PINEC[1]).offsetHSL(0,.12,-.04+jit(47,.08)));
+        pineC.setColorAt(pi,C.setHex(PINEC[2]).offsetHSL(0,.12,.01+jit(59,.08)));
         treeScale.push(6.6+1.1*s);
         pi++;
       }else{
@@ -889,7 +903,7 @@ function initWorld(){
         // costs nothing because we were already setting a colour per instance.
         [blobA,blobB,blobC].forEach((mesh,tier)=>{
           const [ty,ring,sc,syM]=TIERS[tier];
-          const lift=(tier-1)*.055;
+          const lift=-.05+(tier-1)*.055; // darker overall, still lighter toward the top
           for(let k=0;k<3;k++){
             const idx=li*3+k;
             const az=hash(i,71+tier*13+k*5)*6.28;
@@ -897,7 +911,7 @@ function initWorld(){
             const oy=ty+(hash(i,89+tier*11+k*2)-.5)*.6;
             const cs=sc*s*(.78+hash(i,97+tier*5+k*3)*.44);
             put(mesh,idx,x,z,Q,Math.cos(az)*rj,oy,Math.sin(az)*rj,cs,cs*syM,cs);
-            mesh.setColorAt(idx,C.setHex(L[tier]).offsetHSL(0,0,lift+jit(43+tier*7+k*3,.07)));
+            mesh.setColorAt(idx,C.setHex(L[tier]).offsetHSL(0,.12,lift+jit(43+tier*7+k*3,.07)));
           }
         });
         treeScale.push(perch);
@@ -915,7 +929,7 @@ function initWorld(){
           TIP.set(0,1.7*bsy,0).applyQuaternion(QB);
           const ls=(tt===1?.72:.95)*s;
           put(branchLeaf,bi,x,z,Q,bx0+TIP.x,by0+TIP.y,bz0+TIP.z,ls,ls,ls);
-          branchLeaf.setColorAt(bi,C.setHex(L[1]).offsetHSL(0,0,jit(101+b*4,.08)));
+          branchLeaf.setColorAt(bi,C.setHex(L[1]).offsetHSL(0,.12,-.05+jit(101+b*4,.08)));
           bi++;
         }
         li++;
@@ -1264,38 +1278,39 @@ function buildGroundCover(){
   };
   // ---- grass tufts ----
   if(G.length){
-    const gm=new THREE.MeshLambertMaterial({map:bladeTex(),alphaTest:.35,side:THREE.DoubleSide,color:0xffffff});
+    const gm=new THREE.MeshLambertMaterial({map:bladeTex(),alphaTest:.35,color:0xffffff});
     windifyGrass(gm,.45);
-    const grass=new THREE.InstancedMesh(crossQuadGeo(.42,.52,3),gm,G.length);
+    const grass=new THREE.InstancedMesh(crossQuadGeo(.34,.40,3),gm,G.length);
     G.forEach(([x,z],i)=>{
-      const s=.7+rnd()*.9;
-      place(grass,i,x,0,z,s,s*(.75+rnd()*.7),s,rnd()*6.28);
-      grass.setColorAt(i,C.setHex(0x89b96a).offsetHSL((rnd()-.5)*.05,(rnd()-.5)*.2,(rnd()-.5)*.22));
+      const s=.65+rnd()*.7;
+      place(grass,i,x,0,z,s,s*(.7+rnd()*.55),s,rnd()*6.28);
+      grass.setColorAt(i,C.setHex(0x67974e).offsetHSL((rnd()-.5)*.04,(rnd()-.5)*.10,(rnd()-.5)*.10));
     });
     grass.instanceColor.needsUpdate=true;grass.receiveShadow=true;scene.add(grass);
   }
   // ---- bushes (reuse the canopy leaf texture so the forest reads as one material) ----
-  if(B.length&&leafTexShared){
-    const bm=new THREE.MeshLambertMaterial({map:leafTexShared,alphaTest:.3,side:THREE.DoubleSide,color:0xffffff});
+  if(B.length){
+    const bm=new THREE.MeshLambertMaterial({color:0xffffff,map:leafTexShared||null});
     windify(bm,.06,'leaf');
     const bush=new THREE.InstancedMesh(dentGeo(new THREE.SphereGeometry(.85,8,6),.30),bm,B.length);
     B.forEach(([x,z],i)=>{
       const s=.6+rnd()*.75;
       place(bush,i,x,s*.42,z,s,s*(.6+rnd()*.35),s,rnd()*6.28);
-      bush.setColorAt(i,C.setHex(0x3f7d42).offsetHSL((rnd()-.5)*.06,(rnd()-.5)*.18,(rnd()-.5)*.16));
+      bush.setColorAt(i,C.setHex(0x3f7d42).offsetHSL((rnd()-.5)*.06,.12+(rnd()-.5)*.16,-.05+(rnd()-.5)*.14));
     });
     bush.instanceColor.needsUpdate=true;bush.castShadow=true;scene.add(bush);
   }
   // ---- fallen leaf litter ----
   if(L.length){
     const lg=new THREE.CircleGeometry(1,10);lg.rotateX(-Math.PI/2);
-    const lm=new THREE.MeshLambertMaterial({map:litterTex(),alphaTest:.35,color:0xffffff,
+    const lm=new THREE.MeshLambertMaterial({map:litterTex(),transparent:true,opacity:.75,
+      depthWrite:false,color:0xffffff,
       polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-1});
     const litter=new THREE.InstancedMesh(lg,lm,L.length);
     L.forEach(([x,z],i)=>{
       const s=.9+rnd()*1.7;
       place(litter,i,x,.045,z,s,1,s,rnd()*6.28);
-      litter.setColorAt(i,C.setHex(0x9c8d64).offsetHSL((rnd()-.5)*.05,(rnd()-.5)*.16,(rnd()-.5)*.16));
+      litter.setColorAt(i,C.setHex(0x8f8a5c).offsetHSL((rnd()-.5)*.04,(rnd()-.5)*.10,(rnd()-.5)*.10));
     });
     litter.instanceColor.needsUpdate=true;scene.add(litter);
   }
