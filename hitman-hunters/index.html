@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>HITMAN HUNTERS 3D — v9 INSIDE &amp; UP</title>
+<title>HITMAN HUNTERS 3D — v9.1 GOOD TREES</title>
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#0b0e14;font-family:'Segoe UI',Arial,sans-serif;user-select:none}
   #c{display:block}
@@ -153,7 +153,7 @@
 <!-- ============ HOME SCREEN ============ -->
 <div id="overlay">
   <h1>HITMAN <span class="red">HUNTERS</span></h1>
-  <div class="ver">— v9 · INSIDE &amp; UP · <span id="mapName"></span> —</div>
+  <div class="ver">— v9.1 · GOOD TREES · <span id="mapName"></span> —</div>
   <div class="summary" id="runSummary" style="display:none"></div>
   <div class="statrow">
     <div class="stat">💰<b id="hMoney">0</b><span>BANK</span></div>
@@ -565,9 +565,71 @@ function rboxGeo(w,h,d,r){
 }
 // GPU wind: the vertex shader offsets foliage by a time-based sine wave.
 // The CPU does NOTHING per-frame per-tree — the graphics card sways every leaf.
+// ============================================================
+//  v9.1 FOLIAGE HELPERS
+//  Leaf and needle textures are drawn on a canvas with TRANSPARENT GAPS, then used
+//  with alphaTest — a hard per-pixel cutoff (drawn, or not drawn at all). That's what
+//  turns a smooth sphere into a leafy mass you can see sky through, and unlike real
+//  transparency it needs no sorting, so it costs essentially nothing.
+// ============================================================
+function foliageTex(kind){
+  return canvasTex(256,256,(g,w,h)=>{
+    // Start SOLID and PUNCH HOLES, rather than scattering leaves onto nothing.
+    // Why: mipmaps average the alpha channel as a texture shrinks with distance. A
+    // sparse texture averages below the cutoff and the entire canopy vanishes. Keeping
+    // coverage high (~78%) means distant trees stay leafy while close ones show sky.
+    g.fillStyle='#ffffff';g.fillRect(0,0,w,h);
+    for(let i=0;i<190;i++){ // darker clumps = depth inside the leaf mass, not a flat wash
+      g.fillStyle='rgba(96,132,88,'+(.10+Math.random()*.26)+')';
+      g.beginPath();g.arc(Math.random()*w,Math.random()*h,6+Math.random()*17,0,7);g.fill();}
+    for(let i=0;i<90;i++){ // a few brighter sun-caught clusters
+      g.fillStyle='rgba(255,255,235,'+(.06+Math.random()*.16)+')';
+      g.beginPath();g.arc(Math.random()*w,Math.random()*h,4+Math.random()*10,0,7);g.fill();}
+    g.globalCompositeOperation='destination-out';g.fillStyle='#000';
+    const holes=kind==='needle'?190:105;
+    for(let i=0;i<holes;i++){
+      const cx=Math.random()*w,cy=Math.random()*h,rot=Math.random()*3.14;
+      const r=kind==='needle'?1.4+Math.random()*2.6:2.4+Math.random()*4.6;
+      // punch every hole in all 9 wrapped positions so the texture tiles seamlessly
+      for(const dx of[-w,0,w])for(const dy of[-h,0,h]){
+        g.beginPath();g.ellipse(cx+dx,cy+dy,r,r*(kind==='needle'?2.3:1.3),rot,0,7);g.fill();}
+    }
+    g.globalCompositeOperation='source-over';
+  });
+}
+function barkTex(birch){
+  return canvasTex(64,128,(g,w,h)=>{
+    g.fillStyle=birch?'#f4f1e8':'#b9b1a6';g.fillRect(0,0,w,h);
+    if(birch){ // the signature look: pale bark with dark horizontal dashes
+      for(let i=0;i<28;i++){g.fillStyle='rgba(28,26,24,'+(.5+Math.random()*.45)+')';
+        g.fillRect(Math.random()*w,Math.random()*h,4+Math.random()*13,1+Math.random()*2.5);}
+      for(let i=0;i<44;i++){g.fillStyle='rgba(120,115,105,.16)';g.fillRect(Math.random()*w,Math.random()*h,2,1);}
+    }else{ // rough vertical furrows
+      for(let i=0;i<130;i++){g.fillStyle='rgba(58,44,30,'+(.14+Math.random()*.34)+')';
+        g.fillRect(Math.random()*w,Math.random()*h*.4,.6+Math.random()*1.6,h*(.3+Math.random()*.8));}
+      for(let i=0;i<420;i++){g.fillStyle='rgba(255,246,226,'+(Math.random()*.16)+')';
+        g.fillRect(Math.random()*w,Math.random()*h,.8,2+Math.random()*5);}
+      for(let i=0;i<60;i++){g.fillStyle='rgba(40,30,20,'+(Math.random()*.2)+')';
+        g.fillRect(0,Math.random()*h,w,.8);}
+    }
+  });
+}
+// Push each vertex in/out by a hash of its POSITION, not its index. A sphere has
+// duplicate vertices along its UV seam — hashing the index would move them apart and
+// tear a crack open. Same position → same offset → the seam stays welded shut.
+function dentGeo(geo,amt,radialOnly){
+  const p=geo.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const x=p.getX(i),y=p.getY(i),z=p.getZ(i);
+    const hs=Math.sin(x*12.9898+y*78.233+z*37.719)*43758.5453;
+    const f=1+((hs-Math.floor(hs))-.5)*amt;
+    if(radialOnly)p.setXYZ(i,x*f,y,z*f);else p.setXYZ(i,x*f,y*f,z*f);
+  }
+  p.needsUpdate=true;geo.computeVertexNormals();return geo;
+}
 const windU={value:0};
-function windify(mat,strength){
-  mat.customProgramCacheKey=()=>'windy';
+function windify(mat,strength,key){
+  mat.customProgramCacheKey=()=>'windy'+(key||'');
   mat.onBeforeCompile=sh=>{
     sh.uniforms.uTime=windU;
     sh.uniforms.uStr={value:strength};
@@ -672,31 +734,62 @@ function initWorld(){
     for(let i=0;i<n;i++)tryTree(F.x0+rnd()*(F.x1-F.x0),F.z0+rnd()*(F.z1-F.z0));});
   for(let i=0;i<(profile.bigMap?70:40);i++)tryTree((rnd()*2-1)*(MAP-8),(rnd()*2-1)*(MAP-8));
   {
-    // 4 species: OAK (round, 2 branches) / BIRCH (tall pale, 1 branch) / PINE (3 cones) / CYPRESS (columnar)
-    // All instanced: 8 draw calls total no matter how many trees. Wind is done on the GPU.
+    // 4 species: OAK / BIRCH (pale dashed bark) / PINE (needled cones) / CYPRESS (columnar).
+    // v9.1: every leafy tree is NINE clumps in three tiers instead of three big spheres,
+    // each clump dented out of round and wearing an alpha-tested leaf texture. Still
+    // instanced — 9 clumps per tree cost the SAME number of draw calls as 3, because
+    // they're extra instances of the same three meshes, not extra meshes.
     const n=treePos.length,m4=new THREE.Matrix4();
-    const V=new THREE.Vector3(),SC=new THREE.Vector3(),Q=new THREE.Quaternion(),QB=new THREE.Quaternion(),QT=new THREE.Quaternion(),E=new THREE.Euler(),C=new THREE.Color();
+    const V=new THREE.Vector3(),SC=new THREE.Vector3(),TIP=new THREE.Vector3(),
+      Q=new THREE.Quaternion(),QB=new THREE.Quaternion(),QT=new THREE.Quaternion(),
+      QI=new THREE.Quaternion(),E=new THREE.Euler(),C=new THREE.Color();
     const hash=(i,k)=>(((i+7)*k)%97)/97;
     const types=treePos.map((_,i)=>{const r=hash(i,131);return r<.35?0:r<.6?1:r<.85?2:3;});
-    const nPine=types.filter(tt=>tt===2).length,nLeaf=n-nPine;
+    const nPine=types.filter(tt=>tt===2).length,nBirch=types.filter(tt=>tt===1).length;
+    const nLeaf=n-nPine,nBark=n-nBirch;
     const nBranch=types.reduce((a,tt)=>a+(tt===0?2:tt===1?1:0),0);
-    const white=()=>new THREE.MeshLambertMaterial({color:0xffffff});
-    const trunkM=white(),branchM=white(),blobM1=white(),blobM2=white(),blobM3=white(),pineM1=white(),pineM2=white(),pineM3=white();
-    [[blobM1,.10],[blobM2,.14],[blobM3,.12],[pineM1,.05],[pineM2,.06],[pineM3,.08]].forEach(([m,st])=>windify(m,st));
-    const trunks=new THREE.InstancedMesh(new THREE.CylinderGeometry(.26,.5,3.8,7),trunkM,n);
+    // ---- textures ----
+    const leafTex=foliageTex('leaf'),needleTex=foliageTex('needle');
+    leafTex.wrapS=leafTex.wrapT=THREE.RepeatWrapping;leafTex.repeat.set(2,1.4);
+    needleTex.wrapS=needleTex.wrapT=THREE.RepeatWrapping;needleTex.repeat.set(2.4,1.8);
+    const barkR=barkTex(false),barkB=barkTex(true);
+    [barkR,barkB].forEach(t=>{t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(3,2.2);});
+    const leafMat=st=>{const m=new THREE.MeshLambertMaterial({color:0xffffff,map:leafTex,alphaTest:.3,side:THREE.DoubleSide});windify(m,st,'leaf');return m;};
+    const needleMat=st=>{const m=new THREE.MeshLambertMaterial({color:0xffffff,map:needleTex,alphaTest:.3,side:THREE.DoubleSide});windify(m,st,'needle');return m;};
+    const blobM1=leafMat(.10),blobM2=leafMat(.14),blobM3=leafMat(.12);
+    const pineM1=needleMat(.05),pineM2=needleMat(.06),pineM3=needleMat(.08);
+    const trunkM=new THREE.MeshLambertMaterial({color:0xffffff,map:barkR});
+    const trunkBM=new THREE.MeshLambertMaterial({color:0xffffff,map:barkB});
+    const branchM=new THREE.MeshLambertMaterial({color:0xffffff,map:barkR});
+    // ---- meshes (11 draw calls for the whole forest) ----
+    const trunkGeo=new THREE.CylinderGeometry(.26,.5,3.8,8);
+    const trunks=new THREE.InstancedMesh(trunkGeo,trunkM,Math.max(1,nBark));
+    const trunksB=new THREE.InstancedMesh(trunkGeo,trunkBM,Math.max(1,nBirch));
     const branchGeo=new THREE.CylinderGeometry(.07,.13,1.7,5);branchGeo.translate(0,.85,0);
     const branches=new THREE.InstancedMesh(branchGeo,branchM,Math.max(1,nBranch));
-    const blobA=new THREE.InstancedMesh(new THREE.SphereGeometry(1.9,7,6),blobM1,Math.max(1,nLeaf));
-    const blobB=new THREE.InstancedMesh(new THREE.SphereGeometry(1.4,7,6),blobM2,Math.max(1,nLeaf));
-    const blobC=new THREE.InstancedMesh(new THREE.SphereGeometry(1.15,6,5),blobM3,Math.max(1,nLeaf));
-    const pineA=new THREE.InstancedMesh(new THREE.ConeGeometry(2.1,4.2,7),pineM1,Math.max(1,nPine));
-    const pineB=new THREE.InstancedMesh(new THREE.ConeGeometry(1.55,3.1,7),pineM2,Math.max(1,nPine));
-    const pineC=new THREE.InstancedMesh(new THREE.ConeGeometry(1.0,2.0,6),pineM3,Math.max(1,nPine));
-    [trunks,branches,blobA,blobB,blobC,pineA,pineB,pineC].forEach(mm=>mm.castShadow=true);
-    const TRUNKC=[0x5e3d23,0xbfb49e,0x4e3016,0x6a4a2a];
+    const branchLeaf=new THREE.InstancedMesh(dentGeo(new THREE.SphereGeometry(.62,6,5),.34),blobM2,Math.max(1,nBranch));
+    const blobA=new THREE.InstancedMesh(dentGeo(new THREE.SphereGeometry(1.25,9,7),.22),blobM1,Math.max(1,nLeaf*3));
+    const blobB=new THREE.InstancedMesh(dentGeo(new THREE.SphereGeometry(1.00,8,6),.24),blobM2,Math.max(1,nLeaf*3));
+    const blobC=new THREE.InstancedMesh(dentGeo(new THREE.SphereGeometry(.80,7,6),.26),blobM3,Math.max(1,nLeaf*3));
+    const pineA=new THREE.InstancedMesh(dentGeo(new THREE.ConeGeometry(2.1,4.2,8),.15,true),pineM1,Math.max(1,nPine));
+    const pineB=new THREE.InstancedMesh(dentGeo(new THREE.ConeGeometry(1.55,3.1,8),.16,true),pineM2,Math.max(1,nPine));
+    const pineC=new THREE.InstancedMesh(dentGeo(new THREE.ConeGeometry(1.0,2.0,7),.17,true),pineM3,Math.max(1,nPine));
+    const shadowGeo=new THREE.CircleGeometry(1,12);shadowGeo.rotateX(-Math.PI/2);
+    const baseShadow=new THREE.InstancedMesh(shadowGeo,new THREE.MeshBasicMaterial({
+      color:0x182a14,transparent:true,opacity:.32,depthWrite:false,
+      polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-1}),n);
+    [trunks,trunksB,branches,branchLeaf,blobA,blobB,blobC,pineA,pineB,pineC].forEach(mm=>mm.castShadow=true);
+    // trunk colours are brighter than v8.1 because they now MULTIPLY a bark texture
+    const TRUNKC=[0x8a5c35,0xd8d2c4,0x7a4a25,0x9a6f42];
     const LEAFC=[[0x3e7c3f,0x4f9350,0x2f6a35],[0x7fae4e,0x93c25e,0x6a9a40],null,[0x2c5f3a,0x35704a,0x244f30]];
     const PINEC=[0x2d6a4f,0x40916c,0x235743];
-    let li=0,pi=0,bi=0;
+    // per species: three tiers of [height, ring radius, clump scale, y-stretch]
+    const CANOPY={
+      0:[[4.35,1.30,1.15,1],[5.45,1.05,.95,1],[6.35,.60,.72,1]],          // OAK — broad & round
+      1:[[5.05,.95,.86,1.05],[6.00,.78,.70,1.05],[6.85,.46,.55,1]],       // BIRCH — taller, lighter
+      3:[[4.50,.44,.72,1.55],[5.95,.40,.66,1.55],[7.10,.32,.54,1.45]],    // CYPRESS — columnar
+    };
+    let li=0,pi=0,bi=0,ti=0,tbi=0;
     function put(mesh,idx,bx,bz,q,ox,oy,oz,sx,sy,sz,extraQ){
       V.set(ox,oy,oz).applyQuaternion(q);V.x+=bx;V.z+=bz;
       QT.copy(q);if(extraQ)QT.multiply(extraQ);
@@ -709,35 +802,41 @@ function initWorld(){
       const jit=(k,r)=>(hash(i,k)-.5)*r;
       E.set(jit(53,.16),hash(i,17)*6.28,jit(29,.16));Q.setFromEuler(E); // random lean + spin
       const tsx=[1,.62,.9,.7][tt],tsy=[1,1.25,1,1.2][tt];
-      put(trunks,i,x,z,Q,0,1.9*tsy,0,tsx,tsy,tsx);
-      trunks.setColorAt(i,C.setHex(TRUNKC[tt]).offsetHSL(0,0,jit(11,.05)));
-      if(tt===2){ // PINE
+      // trunk — birch gets its own mesh so it can wear the pale dashed bark
+      const tMesh=tt===1?trunksB:trunks,tIdx=tt===1?tbi++:ti++;
+      put(tMesh,tIdx,x,z,Q,0,1.9*tsy,0,tsx,tsy,tsx);
+      tMesh.setColorAt(tIdx,C.setHex(TRUNKC[tt]).offsetHSL(0,0,jit(11,.05)));
+      // soft shade pooling at the base so the tree sits IN the ground, not on it
+      m4.compose(V.set(x,.06,z),QI,SC.set((tt===2?1.5:1.9)*s,1,(tt===2?1.5:1.9)*s));
+      baseShadow.setMatrixAt(i,m4);
+      if(tt===2){ // PINE — three needled cones
         put(pineA,pi,x,z,Q,0,3.7+2.1*s,0,s,s,s);
         put(pineB,pi,x,z,Q,jit(19,.5),5.5+2.1*s,jit(23,.5),s,s,s);
         put(pineC,pi,x,z,Q,jit(31,.4),7.0+2.1*s,jit(41,.4),s,s,s);
-        pineA.setColorAt(pi,C.setHex(PINEC[0]).offsetHSL(0,0,jit(43,.08)));
+        pineA.setColorAt(pi,C.setHex(PINEC[0]).offsetHSL(0,0,-.05+jit(43,.08)));
         pineB.setColorAt(pi,C.setHex(PINEC[1]).offsetHSL(0,0,jit(47,.08)));
-        pineC.setColorAt(pi,C.setHex(PINEC[2]).offsetHSL(0,0,jit(59,.08)));
+        pineC.setColorAt(pi,C.setHex(PINEC[2]).offsetHSL(0,0,.05+jit(59,.08)));
         treeScale.push(6.6+1.1*s);
         pi++;
       }else{
-        const L=LEAFC[tt];let offs,scls,perch;
-        if(tt===0){ // OAK
-          offs=[[0,4.9,0],[.95+jit(19,.5),5.6,.4+jit(23,.5)],[-.85+jit(31,.4),5.25,-.55+jit(41,.4)]];
-          scls=[[1.25,1.0,1.25],[.85,.8,.85],[.75,.72,.75]];perch=6.6+.9*s;
-        }else if(tt===1){ // BIRCH
-          offs=[[0,5.7,0],[.5+jit(19,.4),6.4,.25+jit(23,.4)],[-.5+jit(31,.35),6.05,-.3+jit(41,.35)]];
-          scls=[[.8,.92,.8],[.55,.6,.55],[.5,.52,.5]];perch=7.2+.8*s;
-        }else{ // CYPRESS
-          offs=[[0,5.4,0],[jit(19,.3),7.0,jit(23,.3)],[jit(31,.3),4.2,jit(41,.3)]];
-          scls=[[.6,1.7,.6],[.42,1.05,.42],[.55,.9,.55]];perch=7.9+.9*s;
-        }
-        put(blobA,li,x,z,Q,offs[0][0],offs[0][1],offs[0][2],scls[0][0]*s,scls[0][1]*s,scls[0][2]*s);
-        put(blobB,li,x,z,Q,offs[1][0],offs[1][1],offs[1][2],scls[1][0]*s,scls[1][1]*s,scls[1][2]*s);
-        put(blobC,li,x,z,Q,offs[2][0],offs[2][1],offs[2][2],scls[2][0]*s,scls[2][1]*s,scls[2][2]*s);
-        blobA.setColorAt(li,C.setHex(L[0]).offsetHSL(0,0,jit(43,.09)));
-        blobB.setColorAt(li,C.setHex(L[1]).offsetHSL(0,0,jit(47,.09)));
-        blobC.setColorAt(li,C.setHex(L[2]).offsetHSL(0,0,jit(59,.09)));
+        const L=LEAFC[tt],TIERS=CANOPY[tt];
+        const perch=tt===0?6.6+.9*s:tt===1?7.2+.8*s:7.9+.9*s;
+        // NINE clumps: three tiers of three, ringed around the trunk at rising heights.
+        // Upper tiers are tinted LIGHTER — that's the sunlight-from-above read, and it
+        // costs nothing because we were already setting a colour per instance.
+        [blobA,blobB,blobC].forEach((mesh,tier)=>{
+          const [ty,ring,sc,syM]=TIERS[tier];
+          const lift=(tier-1)*.055;
+          for(let k=0;k<3;k++){
+            const idx=li*3+k;
+            const az=hash(i,71+tier*13+k*5)*6.28;
+            const rj=ring*(.5+hash(i,83+tier*7+k*3)*.95);
+            const oy=ty+(hash(i,89+tier*11+k*2)-.5)*.6;
+            const cs=sc*s*(.78+hash(i,97+tier*5+k*3)*.44);
+            put(mesh,idx,x,z,Q,Math.cos(az)*rj,oy,Math.sin(az)*rj,cs,cs*syM,cs);
+            mesh.setColorAt(idx,C.setHex(L[tier]).offsetHSL(0,0,lift+jit(43+tier*7+k*3,.07)));
+          }
+        });
         treeScale.push(perch);
         const nb=tt===0?2:1;
         for(let b=0;b<nb;b++){
@@ -745,17 +844,26 @@ function initWorld(){
           QB.setFromEuler(E.set(0,az,0));
           const tilt=new THREE.Quaternion().setFromEuler(new THREE.Euler(0,0,.95+jit(67+b,.3)));
           QB.multiply(tilt);
-          put(branches,bi,x,z,Q,Math.sin(az)*.25,2.3+b*.7,Math.cos(az)*.25,
-            (tt===1?.6:1)*s,(tt===1?.7:.9)*s,(tt===1?.6:1)*s,QB);
-          branches.setColorAt(bi,C.setHex(tt===1?0xa89a84:0x54371f));
+          const bsx=(tt===1?.6:1)*s,bsy=(tt===1?.7:.9)*s;
+          const bx0=Math.sin(az)*.25,by0=2.3+b*.7,bz0=Math.cos(az)*.25;
+          put(branches,bi,x,z,Q,bx0,by0,bz0,bsx,bsy,bsx,QB);
+          branches.setColorAt(bi,C.setHex(tt===1?0xd8d2c4:0x7a5230));
+          // a leaf cluster on the TIP, so branches stop reading as bare sticks
+          TIP.set(0,1.7*bsy,0).applyQuaternion(QB);
+          const ls=(tt===1?.72:.95)*s;
+          put(branchLeaf,bi,x,z,Q,bx0+TIP.x,by0+TIP.y,bz0+TIP.z,ls,ls,ls);
+          branchLeaf.setColorAt(bi,C.setHex(L[1]).offsetHSL(0,0,jit(101+b*4,.08)));
           bi++;
         }
         li++;
       }
     });
-    [trunks,branches,blobA,blobB,blobC,pineA,pineB,pineC].forEach(mm=>{if(mm.instanceColor)mm.instanceColor.needsUpdate=true;});
-    scene.add(trunks,blobA,blobB,blobC);
-    if(nBranch>0)scene.add(branches);
+    [trunks,trunksB,branches,branchLeaf,blobA,blobB,blobC,pineA,pineB,pineC]
+      .forEach(mm=>{if(mm.instanceColor)mm.instanceColor.needsUpdate=true;});
+    scene.add(blobA,blobB,blobC,baseShadow);
+    if(nBark>0)scene.add(trunks);
+    if(nBirch>0)scene.add(trunksB);
+    if(nBranch>0)scene.add(branches,branchLeaf);
     if(nPine>0)scene.add(pineA,pineB,pineC);
   }
   // lamps
